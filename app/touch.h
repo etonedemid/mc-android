@@ -3,7 +3,9 @@
 //
 //   left:   D-pad (W A S D; double-tap forward to sprint), sneak toggle in its middle
 //   right:  jump, use (right button held: place, eat, draw a bow) beside it, drop above; inventory beside the hotbar;
-//           pause and camera view at the top right
+//           pause and camera view at the top right; chat (opens with the keyboard up) at the top left
+//   menus:  keyboard button at the top left (soft keyboard for chat, signs, names); over a screen opened from the
+//           game, a close button at the top right
 //   hotbar: tap a slot to select it
 //   elsewhere: drag to look, short tap to attack (left click), hold still to break (left button held)
 //
@@ -101,14 +103,15 @@ static int gles_load(void) {
 // --- layout (surface pixels) ---
 enum { ACT_KEY, ACT_TOGGLE, ACT_MOUSE };   // ACT_MOUSE: key is the mouse button
 typedef struct { const char *glyph; int action, key; float x, y, w, h; int pressed; } Button;
-enum { B_SNEAK, B_JUMP, B_USE, B_DROP, B_INV, B_PAUSE, B_CAM, NBUTTONS };
-static Button close_button;
+enum { B_SNEAK, B_JUMP, B_USE, B_DROP, B_INV, B_PAUSE, B_CAM, B_CHAT, NBUTTONS };
+static Button close_button, keyboard_button;
 // A screen the game opened over the world (the cursor was freed after being captured): shows the close button. It
 // stays set after quitting to the title screen, where Escape does nothing.
 static int screen_from_game;
 static void track_screen(void) {
     static int prev = GLFW_CURSOR_NORMAL;
     if (cursor_mode != prev) screen_from_game = prev == GLFW_CURSOR_DISABLED;
+    if (cursor_mode != prev && cursor_mode == GLFW_CURSOR_DISABLED) keyboard(0);   // back in the game
     prev = cursor_mode;
 }
 static Button buttons[NBUTTONS];
@@ -144,11 +147,13 @@ static const char *G_INV = "########" "#......#" "#.####.#" "########" "#......#
 static const char *G_PAUSE = "........" ".##..##." ".##..##." ".##..##." ".##..##." ".##..##." ".##..##." "........";
 static const char *G_CAM = "........" "..####.." ".#....#." "#..##..#" "#..##..#" ".#....#." "..####.." "........";
 static const char *G_USE = "########" "#......#" "#..##..#" "#.####.#" "#.####.#" "#..##..#" "#......#" "########";
+static const char *G_KEYB = "........" "########" "#.#.#.##" "########" "##.#.#.#" "########" "#.####.#" "########";
+static const char *G_CHAT = "########" "#......#" "#.####.#" "#......#" "#.###..#" "#......#" "########" ".##.....";
 static const char *G_CLOSE = "##....##" "###..###" ".######." "..####.." "..####.." ".######." "###..###" "##....##";
-#define NGLYPHS 13   // atlas cells (16x16): 0 is solid, then these in order
+#define NGLYPHS 15   // atlas cells (16x16): 0 is solid, then these in order
 static const char **all_glyphs(void) {
     static const char *all[NGLYPHS];
-    const char *g[NGLYPHS] = { NULL, G_UP, G_DOWN, G_LEFT, G_RIGHT, G_JUMP, G_SNEAK, G_DROP, G_INV, G_PAUSE, G_CAM, G_CLOSE, G_USE };
+    const char *g[NGLYPHS] = { NULL, G_UP, G_DOWN, G_LEFT, G_RIGHT, G_JUMP, G_SNEAK, G_DROP, G_INV, G_PAUSE, G_CAM, G_CLOSE, G_USE, G_KEYB, G_CHAT };
     memcpy(all, g, sizeof g);
     return all;
 }
@@ -170,6 +175,8 @@ static void layout(void) {
     buttons[B_PAUSE] = (Button){ G_PAUSE, ACT_KEY, K_ESC, W - m / 2 - tb, m / 2, tb, tb };
     buttons[B_CAM] = (Button){ G_CAM, ACT_KEY, K_F5, W - m / 2 - 2 * tb - 12 * u, m / 2, tb, tb };
     close_button = (Button){ G_CLOSE, ACT_KEY, K_ESC, W - m / 2 - tb, m / 2, tb, tb, close_button.pressed };
+    keyboard_button = (Button){ G_KEYB, ACT_KEY, 0, m / 2, m / 2, tb, tb, keyboard_button.pressed };
+    buttons[B_CHAT] = (Button){ G_CHAT, ACT_KEY, 'T', m / 2, m / 2, tb, tb };
 }
 static void read_gui_scale(void) {
     char p[700]; snprintf(p, sizeof p, "%s/minecraft/options.txt", data_dir);
@@ -235,6 +242,14 @@ static void touch_event(int a, int id, double x, double y) {
         for (int i = 0; i < 10 && !f; i++) if (!fingers[i].role) f = &fingers[i];
         if (!f) return;
         *f = (Finger){ id, R_NONE, -1, 0, 0, x, y, x, y, now_s() };
+        if (!ingame) {             // the keyboard button, in every menu
+            layout();
+            if (in(&keyboard_button, x, y, 8)) {
+                f->role = R_BUTTON; f->button = -2;
+                keyboard(!keyboard_shown);
+                return;
+            }
+        }
         if (!ingame && screen_from_game) {   // the close button over a screen opened from the game
             layout();
             if (in(&close_button, x, y, 8)) {
@@ -258,6 +273,7 @@ static void touch_event(int a, int id, double x, double y) {
             f->role = R_BUTTON; f->button = i;
             b->pressed = 1;
             if (b->action == ACT_MOUSE) touch_button(b->key, 1); else touch_key(b->key, 1);
+            if (i == B_CHAT) keyboard(1);
             return;
         }
         if (in(&buttons[B_SNEAK], x, y, 0)) {   // the D-pad's middle: sneak on/off
@@ -292,6 +308,7 @@ static void touch_event(int a, int id, double x, double y) {
     // up
     if (f->role == R_MOUSE) { touch_down = 0; if (cb.button) cb.button(&win, 0, 0, 0); }
     else if (f->role == R_PAD) pad_update(pad_cx, pad_cy);
+    else if (f->role == R_BUTTON && f->button == -2) {}   // keyboard button: toggled on press
     else if (f->role == R_BUTTON && f->button < 0) { close_button.pressed = 0; touch_key(K_ESC, 0); }
     else if (f->role == R_BUTTON && buttons[f->button].action == ACT_MOUSE) { buttons[f->button].pressed = 0; touch_button(buttons[f->button].key, 0); }
     else if (f->role == R_BUTTON && buttons[f->button].action == ACT_KEY) { buttons[f->button].pressed = 0; touch_key(buttons[f->button].key, 0); }
@@ -377,7 +394,7 @@ static void draw_button(float x, float y, float w, float h, int glyph, int press
 static void draw_overlay(void) {
     track_screen();
     int ingame = cursor_mode == GLFW_CURSOR_DISABLED;
-    int show = !((!ingame && !screen_from_game) || pad_active);   // nothing over menus, or while a controller is in use
+    int show = !pad_active;   // nothing while a controller is in use
     static int shown = -1;
     if (show != shown) { LOG("overlay %s (in game %d, screen from game %d, controller %d)", show ? "on" : "off", ingame, screen_from_game, pad_active); shown = show; }
     if (!show) return;
@@ -397,7 +414,9 @@ static void draw_overlay(void) {
     glEnableVertexAttribArray(0); glEnableVertexAttribArray(1);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     if (!ingame) {
-        draw_button(close_button.x, close_button.y, close_button.w, close_button.h, glyph_index(G_CLOSE), close_button.pressed);
+        draw_button(keyboard_button.x, keyboard_button.y, keyboard_button.w, keyboard_button.h, glyph_index(G_KEYB), keyboard_shown);
+        if (screen_from_game)
+            draw_button(close_button.x, close_button.y, close_button.w, close_button.h, glyph_index(G_CLOSE), close_button.pressed);
         glFlush();
         eglMakeCurrent(dpy, surf, surf, ctx);
         return;

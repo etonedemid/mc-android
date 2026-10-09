@@ -19,9 +19,17 @@ $NDK/llvm-strip --strip-debug out/apk/lib/arm64-v8a/*.so
 [ -f debug.keystore ] || keytool -genkeypair -keystore debug.keystore -storepass android -keypass android -alias debug \
   -keyalg RSA -validity 10000 -dname "CN=etonedemid" > /dev/null 2>&1
 rm -f out/mc.unaligned.apk out/mc.apk
+# the activity (sign-in dialog). MSA_CLIENT_ID: an Azure application ID with public client flows on and Minecraft API
+# access approved by Mojang; without one the dialog only offers offline play.
+J=$SDK/platforms/android-34/android.jar
+rm -rf out/java out/dex && mkdir -p out/java/com/etonedemid/mc out/dex
+printf 'package com.etonedemid.mc;\nfinal class Config { static final String MSA_CLIENT_ID = "%s"; }\n' "${MSA_CLIENT_ID:-}" > out/java/com/etonedemid/mc/Config.java
+javac -source 8 -target 8 -Xlint:-options -cp $J -d out/java/classes app/java/com/etonedemid/mc/*.java out/java/com/etonedemid/mc/Config.java
+$BT/d8 --release --min-api 31 --lib $J --output out/dex $(find out/java/classes -name '*.class')
 rm -rf out/res && mkdir -p out/res && $BT/aapt2 compile --dir app/res -o out/res/
 $BT/aapt2 link -o out/mc.unaligned.apk --manifest app/AndroidManifest.xml -I $SDK/platforms/android-34/android.jar out/res/*.flat
-(cd out/apk && zip -qr -0 ../mc.unaligned.apk lib)   # stored, so the libraries can be mapped straight from the APK
+(cd out/apk && zip -qr -0 ../mc.unaligned.apk lib)
+(cd out/dex && zip -q ../mc.unaligned.apk classes.dex)   # stored, so the libraries can be mapped straight from the APK
 $BT/zipalign -p -f 4 out/mc.unaligned.apk out/mc.apk
 $BT/apksigner sign --ks debug.keystore --ks-pass pass:android out/mc.apk
 ls -la out/mc.apk

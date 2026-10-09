@@ -34,6 +34,14 @@ static AInputQueue *input_queue;
 static int H = 720, W = 1280;          // render size: 720 lines, width from the screen's aspect
 static int screen_w = 1, screen_h = 1; // the window's own size, for touch coordinates
 static int app_closing;
+static ANativeActivity *activity;
+static int keyboard_shown;
+static void keyboard(int show) {
+    if (!activity || show == keyboard_shown) return;
+    keyboard_shown = show;
+    if (show) ANativeActivity_showSoftInput(activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
+    else ANativeActivity_hideSoftInput(activity, 0);
+}
 static volatile int app_focused = 1;    // the activity has the window focus; lost in the background, so the game pauses
 static volatile int pad_active;         // a controller is in use: on-screen controls hidden until the screen is touched
 static volatile int size_changed = 1;   // the game hears about the render size on the next poll (start, rotation, resume)
@@ -56,6 +64,25 @@ static void redirect_stdio(void) {
     dup2(p[1], 1); dup2(p[1], 2);
     setvbuf(stdout, NULL, _IOLBF, 0); setvbuf(stderr, NULL, _IONBF, 0);
     pthread_t t; pthread_create(&t, NULL, log_pump, (void *)(long)p[0]); pthread_detach(t);
+}
+
+// --- the account, from the activity's sign-in dialog (McActivity.java): the game starts once it is decided ---
+static int login_decided;
+static char login_name[64], login_uuid[64], login_token[4096];   // empty name: offline
+JNIEXPORT void JNICALL Java_com_etonedemid_mc_McActivity_nativeLogin(JNIEnv *env, jclass c, jstring name, jstring uuid, jstring token) {
+    (void)c;
+    pthread_mutex_lock(&lock);
+    if (name && uuid && token) {
+        const char *n = (*env)->GetStringUTFChars(env, name, NULL), *u = (*env)->GetStringUTFChars(env, uuid, NULL),
+                   *t = (*env)->GetStringUTFChars(env, token, NULL);
+        snprintf(login_name, sizeof login_name, "%s", n); snprintf(login_uuid, sizeof login_uuid, "%s", u);
+        snprintf(login_token, sizeof login_token, "%s", t);
+        (*env)->ReleaseStringUTFChars(env, name, n); (*env)->ReleaseStringUTFChars(env, uuid, u); (*env)->ReleaseStringUTFChars(env, token, t);
+    }
+    login_decided = 1;
+    pthread_cond_broadcast(&cond);
+    pthread_mutex_unlock(&lock);
+    LOG("account: %s", login_name[0] ? login_name : "offline");
 }
 
 // --- the game thread ---
@@ -89,9 +116,13 @@ static void *game_thread(void *arg) {
         }
         fclose(f);
     } else {
-        char *game[] = { "--username", "etonedemid", "--version", "1.12.2", "--gameDir", p7, "--assetsDir", p8,
-                         "--assetIndex", "1.12", "--uuid", "00000000000000000000000000000000", "--accessToken", "0",
-                         "--userType", "legacy", "--versionType", "release" };
+        pthread_mutex_lock(&lock);
+        while (!login_decided && !app_closing) pthread_cond_wait(&cond, &lock);
+        pthread_mutex_unlock(&lock);
+        int msa = login_name[0] != 0;
+        char *game[] = { "--username", msa ? login_name : "etonedemid", "--version", "1.12.2", "--gameDir", p7, "--assetsDir", p8,
+                         "--assetIndex", "1.12", "--uuid", msa ? login_uuid : "00000000000000000000000000000000",
+                         "--accessToken", msa ? login_token : "0", "--userType", msa ? "msa" : "legacy", "--versionType", "release" };
         for (int i = 0; i < 18; i++) argv[argc++] = game[i];
     }
     // the render size, so the game doesn't start at its 854x480 default (it is also told again on the first poll)
@@ -581,6 +612,7 @@ static void on_destroy(ANativeActivity *a) { (void)a; pthread_mutex_lock(&lock);
 
 API void ANativeActivity_onCreate(ANativeActivity *a, void *saved, size_t saved_size) {
     (void)saved; (void)saved_size;
+    activity = a;
     a->callbacks->onNativeWindowCreated = on_window_created;
     a->callbacks->onNativeWindowDestroyed = on_window_destroyed;
     a->callbacks->onInputQueueCreated = on_input_queue_created;
