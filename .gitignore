@@ -1,0 +1,12 @@
+build/
+out/
+natives/
+deps/
+shots/
+probe/tmp/
+probe/lin/
+probe/jp/
+probe/h
+probe/*.class
+*.log
+debug.keystore

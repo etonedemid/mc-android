@@ -1,0 +1,1 @@
+public class H{public static void main(String[] a){System.out.println("hi from native-image on android");}}

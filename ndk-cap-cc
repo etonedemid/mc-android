@@ -1,0 +1,19 @@
+#!/bin/bash
+# ndk-cap-cc - NDK clang as native-image's C compiler while it builds a C annotation (CAP) cache for android-aarch64.
+# native-image compiles small query programs and runs them to learn struct layouts and constants; a query executable
+# is swapped for a script that runs the real one on the phone over adb (so the values come from bionic itself).
+CC=~/Android/Sdk/ndk/26.3.11579264/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang
+out= prev= compile_only=
+for a in "$@"; do [ "$prev" = -o ] && out=$a; [ "$a" = -c ] && compile_only=1; prev=$a; done
+[ -z "$out" ] || [ -n "$compile_only" ] && exec "$CC" "$@"
+"$CC" "$@" || exit $?
+mv "$out" "$out.bin"
+name=capq.$$.$RANDOM
+cat > "$out" <<EOF
+#!/bin/sh
+adb push "$out.bin" /data/local/tmp/$name >/dev/null || exit 99
+adb shell /data/local/tmp/$name; r=\$?
+adb shell rm -f /data/local/tmp/$name
+exit \$r
+EOF
+chmod +x "$out"
