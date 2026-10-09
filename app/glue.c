@@ -491,6 +491,7 @@ static int handle_input(AInputEvent *e) {
         unsigned pb = akey_to_pad(k);
         if (from_pad && (k == AKEYCODE_DPAD_UP || k == AKEYCODE_DPAD_DOWN || k == AKEYCODE_DPAD_LEFT || k == AKEYCODE_DPAD_RIGHT))
             pb = k == AKEYCODE_DPAD_UP ? PB_UP : k == AKEYCODE_DPAD_DOWN ? PB_DOWN : k == AKEYCODE_DPAD_LEFT ? PB_LEFT : PB_RIGHT;
+        if (pb && !pad_active) LOG("controller key %d from device %d (source %#x)", k, AInputEvent_getDeviceId(e), src);
         if (pb) { pad_seen = 1; pad_active = 1; pad_key_bits = down ? pad_key_bits | pb : pad_key_bits & ~pb; return 1; }
         if (k == AKEYCODE_VOLUME_UP || k == AKEYCODE_VOLUME_DOWN) return 0;   // let the system change the volume
         int g = akey_to_glfw(k);
@@ -501,6 +502,7 @@ static int handle_input(AInputEvent *e) {
         return 1;
     }
     if (from_pad) {   // sticks, triggers, D-pad as a hat
+        if (!pad_active) LOG("controller motion from device %d (source %#x)", AInputEvent_getDeviceId(e), src);
         pad_seen = 1; pad_active = 1;
         pad_ax[0] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0);
         pad_ax[1] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0);

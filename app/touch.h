@@ -2,9 +2,10 @@
 // gets them as plain keyboard and mouse input. Shown only in game (cursor captured); in menus the finger is the mouse.
 //
 //   left:   D-pad (W A S D; double-tap forward to sprint), sneak toggle in its middle
-//   right:  jump, drop above it; inventory beside the hotbar; pause and camera view at the top right
+//   right:  jump, use (right button held: place, eat, draw a bow) beside it, drop above; inventory beside the hotbar;
+//           pause and camera view at the top right
 //   hotbar: tap a slot to select it
-//   elsewhere: drag to look, hold still to break (left button held), short tap to use/place (right click)
+//   elsewhere: drag to look, short tap to attack (left click), hold still to break (left button held)
 //
 // Drawn with GLES 2 in a context of its own on the game's surface, so gl4es's view of the GL state is never disturbed.
 #include <GLES2/gl2.h>
@@ -98,9 +99,9 @@ static int gles_load(void) {
 #define glFlush p_glFlush
 
 // --- layout (surface pixels) ---
-enum { ACT_KEY, ACT_TOGGLE };
+enum { ACT_KEY, ACT_TOGGLE, ACT_MOUSE };   // ACT_MOUSE: key is the mouse button
 typedef struct { const char *glyph; int action, key; float x, y, w, h; int pressed; } Button;
-enum { B_SNEAK, B_JUMP, B_DROP, B_INV, B_PAUSE, B_CAM, NBUTTONS };
+enum { B_SNEAK, B_JUMP, B_USE, B_DROP, B_INV, B_PAUSE, B_CAM, NBUTTONS };
 static Button close_button;
 // A screen the game opened over the world (the cursor was freed after being captured): shows the close button. It
 // stays set after quitting to the title screen, where Escape does nothing.
@@ -142,11 +143,12 @@ static const char *G_DROP = "...##..." "...##..." "...##..." ".######." "..####.
 static const char *G_INV = "########" "#......#" "#.####.#" "########" "#......#" "#......#" "#......#" "########";
 static const char *G_PAUSE = "........" ".##..##." ".##..##." ".##..##." ".##..##." ".##..##." ".##..##." "........";
 static const char *G_CAM = "........" "..####.." ".#....#." "#..##..#" "#..##..#" ".#....#." "..####.." "........";
+static const char *G_USE = "########" "#......#" "#..##..#" "#.####.#" "#.####.#" "#..##..#" "#......#" "########";
 static const char *G_CLOSE = "##....##" "###..###" ".######." "..####.." "..####.." ".######." "###..###" "##....##";
-#define NGLYPHS 12   // atlas cells (16x16): 0 is solid, then these in order
+#define NGLYPHS 13   // atlas cells (16x16): 0 is solid, then these in order
 static const char **all_glyphs(void) {
     static const char *all[NGLYPHS];
-    const char *g[NGLYPHS] = { NULL, G_UP, G_DOWN, G_LEFT, G_RIGHT, G_JUMP, G_SNEAK, G_DROP, G_INV, G_PAUSE, G_CAM, G_CLOSE };
+    const char *g[NGLYPHS] = { NULL, G_UP, G_DOWN, G_LEFT, G_RIGHT, G_JUMP, G_SNEAK, G_DROP, G_INV, G_PAUSE, G_CAM, G_CLOSE, G_USE };
     memcpy(all, g, sizeof g);
     return all;
 }
@@ -156,6 +158,7 @@ static void layout(void) {
     pad_b = b; pad_cx = m + 1.5f * b + 48 * u; pad_cy = H - m - 1.5f * b - 40 * u;   // in from the corner, under the thumb
     buttons[B_SNEAK] = (Button){ G_SNEAK, ACT_TOGGLE, K_LSHIFT, pad_cx - b / 2, pad_cy - b / 2, b, b, buttons[B_SNEAK].pressed };
     buttons[B_JUMP] = (Button){ G_JUMP, ACT_KEY, K_SPACE, W - m - 1.2f * b, pad_cy - 0.6f * b, 1.2f * b, 1.2f * b };
+    buttons[B_USE] = (Button){ G_USE, ACT_MOUSE, 1, W - m - 2.4f * b - 16 * u, pad_cy - 0.5f * b, b, b };
     buttons[B_DROP] = (Button){ G_DROP, ACT_KEY, K_Q, W - m - 0.95f * b, pad_cy - 1.9f * b, 0.7f * b, 0.7f * b };
     // Minecraft's GUI scale: the largest that keeps 320x240 GUI pixels, capped by the option
     int s = 1;
@@ -215,7 +218,7 @@ static void release_all(void) {
     for (int i = 0; i < 10; i++) if (fingers[i].role) fingers[i].role = R_NONE;
     for (int k = 0; k < 512; k++) if (touch_keys[k] && !(k == K_LSHIFT && buttons[B_SNEAK].pressed)) touch_key(k, 0);
     for (int b = 0; b < 3; b++) touch_button(b, 0);
-    for (int i = 0; i < NBUTTONS; i++) if (buttons[i].action == ACT_KEY) buttons[i].pressed = 0;
+    for (int i = 0; i < NBUTTONS; i++) if (buttons[i].action != ACT_TOGGLE) buttons[i].pressed = 0;
     pad_dirs = 0; sprint = 0;
     if (touch_down) { touch_down = 0; if (cb.button) cb.button(&win, 0, 0, 0); }
 }
@@ -253,7 +256,8 @@ static void touch_event(int a, int id, double x, double y) {
             Button *b = &buttons[i];
             if (i == B_SNEAK || !in(b, x, y, 8)) continue;
             f->role = R_BUTTON; f->button = i;
-            b->pressed = 1; touch_key(b->key, 1);
+            b->pressed = 1;
+            if (b->action == ACT_MOUSE) touch_button(b->key, 1); else touch_key(b->key, 1);
             return;
         }
         if (in(&buttons[B_SNEAK], x, y, 0)) {   // the D-pad's middle: sneak on/off
@@ -289,10 +293,11 @@ static void touch_event(int a, int id, double x, double y) {
     if (f->role == R_MOUSE) { touch_down = 0; if (cb.button) cb.button(&win, 0, 0, 0); }
     else if (f->role == R_PAD) pad_update(pad_cx, pad_cy);
     else if (f->role == R_BUTTON && f->button < 0) { close_button.pressed = 0; touch_key(K_ESC, 0); }
+    else if (f->role == R_BUTTON && buttons[f->button].action == ACT_MOUSE) { buttons[f->button].pressed = 0; touch_button(buttons[f->button].key, 0); }
     else if (f->role == R_BUTTON && buttons[f->button].action == ACT_KEY) { buttons[f->button].pressed = 0; touch_key(buttons[f->button].key, 0); }
     else if (f->role == R_LOOK) {
         if (f->breaking) touch_button(0, 0);
-        else if (!f->moved && now_s() - f->t < 0.3) { touch_button(1, 1); touch_button(1, 0); }   // tap: use / place
+        else if (!f->moved && now_s() - f->t < 0.3) { touch_button(0, 1); touch_button(0, 0); }   // tap: attack
     }
     f->role = R_NONE;
 }
@@ -372,7 +377,10 @@ static void draw_button(float x, float y, float w, float h, int glyph, int press
 static void draw_overlay(void) {
     track_screen();
     int ingame = cursor_mode == GLFW_CURSOR_DISABLED;
-    if ((!ingame && !screen_from_game) || pad_active) return;   // nothing over menus, or while a controller is in use
+    int show = !((!ingame && !screen_from_game) || pad_active);   // nothing over menus, or while a controller is in use
+    static int shown = -1;
+    if (show != shown) { LOG("overlay %s (in game %d, screen from game %d, controller %d)", show ? "on" : "off", ingame, screen_from_game, pad_active); shown = show; }
+    if (!show) return;
     // gl4es may still hold some of the frame's drawing; it must reach the surface before the overlay does, or the two
     // land in either order and the controls flicker
     static void (*gl4es_flush)(void);
