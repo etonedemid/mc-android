@@ -163,7 +163,8 @@ static void layout(void) {
     pad_b = b; pad_cx = m + 1.5f * b + 48 * u; pad_cy = H - m - 1.5f * b - 40 * u;   // in from the corner, under the thumb
     buttons[B_SNEAK] = (Button){ G_SNEAK, ACT_TOGGLE, K_LSHIFT, pad_cx - b / 2, pad_cy - b / 2, b, b, buttons[B_SNEAK].pressed };
     buttons[B_JUMP] = (Button){ G_JUMP, ACT_KEY, K_SPACE, W - m - 1.2f * b, pad_cy - 0.6f * b, 1.2f * b, 1.2f * b };
-    buttons[B_USE] = (Button){ G_USE, ACT_MOUSE, 1, W - m - 2.4f * b - 16 * u, pad_cy - 0.5f * b, b, b };
+    // use: up and to the left of jump, on the arc the right thumb sweeps from the corner
+    buttons[B_USE] = (Button){ G_USE, ACT_MOUSE, 1, W - m - 2.2f * b, pad_cy - 1.6f * b, b, b };
     buttons[B_DROP] = (Button){ G_DROP, ACT_KEY, K_Q, W - m - 0.95f * b, pad_cy - 1.9f * b, 0.7f * b, 0.7f * b };
     // Minecraft's GUI scale: the largest that keeps 320x240 GUI pixels, capped by the option
     int s = 1;
