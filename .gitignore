@@ -11,3 +11,4 @@ probe/*.class
 *.log
 debug.keystore
 mc-android.jar
+msa-client-id

@@ -21,6 +21,8 @@ $NDK/llvm-strip --strip-debug out/apk/lib/arm64-v8a/*.so
 rm -f out/mc.unaligned.apk out/mc.apk
 # the activity (sign-in dialog). MSA_CLIENT_ID: an Azure application ID with public client flows on and Minecraft API
 # access approved by Mojang; without one the dialog only offers offline play.
+# (or in the git-ignored file msa-client-id)
+[ -z "$MSA_CLIENT_ID" ] && [ -f msa-client-id ] && MSA_CLIENT_ID=$(cat msa-client-id)
 J=$SDK/platforms/android-34/android.jar
 rm -rf out/java out/dex && mkdir -p out/java/com/etonedemid/mc out/dex
 printf 'package com.etonedemid.mc;\nfinal class Config { static final String MSA_CLIENT_ID = "%s"; }\n' "${MSA_CLIENT_ID:-}" > out/java/com/etonedemid/mc/Config.java
