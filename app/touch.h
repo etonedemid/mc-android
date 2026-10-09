@@ -153,7 +153,7 @@ static const char **all_glyphs(void) {
 
 static void layout(void) {
     float u = H / 720.f, b = 92 * u, m = 48 * u;
-    pad_b = b; pad_cx = m + 1.5f * b; pad_cy = H - m - 1.5f * b;
+    pad_b = b; pad_cx = m + 1.5f * b + 48 * u; pad_cy = H - m - 1.5f * b - 40 * u;   // in from the corner, under the thumb
     buttons[B_SNEAK] = (Button){ G_SNEAK, ACT_TOGGLE, K_LSHIFT, pad_cx - b / 2, pad_cy - b / 2, b, b, buttons[B_SNEAK].pressed };
     buttons[B_JUMP] = (Button){ G_JUMP, ACT_KEY, K_SPACE, W - m - 1.2f * b, pad_cy - 0.6f * b, 1.2f * b, 1.2f * b };
     buttons[B_DROP] = (Button){ G_DROP, ACT_KEY, K_Q, W - m - 0.95f * b, pad_cy - 1.9f * b, 0.7f * b, 0.7f * b };
@@ -221,6 +221,7 @@ static void release_all(void) {
 }
 
 static void touch_event(int a, int id, double x, double y) {
+    if (a == 0) pad_active = 0;   // touching the screen brings the controls back after a controller was used
     static int was_ingame = -1;
     int ingame = cursor_mode == GLFW_CURSOR_DISABLED;
     if (ingame != was_ingame) { release_all(); was_ingame = ingame; }
@@ -371,7 +372,7 @@ static void draw_button(float x, float y, float w, float h, int glyph, int press
 static void draw_overlay(void) {
     track_screen();
     int ingame = cursor_mode == GLFW_CURSOR_DISABLED;
-    if (!ingame && !screen_from_game) return;
+    if ((!ingame && !screen_from_game) || pad_active) return;   // nothing over menus, or while a controller is in use
     // gl4es may still hold some of the frame's drawing; it must reach the surface before the overlay does, or the two
     // land in either order and the controls flicker
     static void (*gl4es_flush)(void);

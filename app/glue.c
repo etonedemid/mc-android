@@ -34,6 +34,8 @@ static AInputQueue *input_queue;
 static int H = 720, W = 1280;          // render size: 720 lines, width from the screen's aspect
 static int screen_w = 1, screen_h = 1; // the window's own size, for touch coordinates
 static int app_closing;
+static volatile int app_focused = 1;    // the activity has the window focus; lost in the background, so the game pauses
+static volatile int pad_active;         // a controller is in use: on-screen controls hidden until the screen is touched
 static volatile int size_changed = 1;   // the game hears about the render size on the next poll (start, rotation, resume)
 
 // --- stdout/stderr -> logcat ---
@@ -237,7 +239,8 @@ API void glfwGetFramebufferSize(Win *w, int *x, int *y) { (void)w; if (x) *x = W
 API void glfwGetWindowPos(Win *w, int *x, int *y) { (void)w; if (x) *x = 0; if (y) *y = 0; }
 API void glfwGetWindowFrameSize(Win *w, int *l, int *t, int *r, int *b) { (void)w; if (l) *l = 0; if (t) *t = 0; if (r) *r = 0; if (b) *b = 0; }
 API void glfwGetWindowContentScale(Win *w, float *x, float *y) { (void)w; if (x) *x = 1; if (y) *y = 1; }
-API int glfwGetWindowAttrib(Win *w, int a) { (void)w; return a == GLFW_FOCUSED || a == GLFW_VISIBLE || a == GLFW_HOVERED; }
+// Minecraft's "pause on lost focus" reads the focus attribute: in the background the game opens its pause menu
+API int glfwGetWindowAttrib(Win *w, int a) { (void)w; return a == GLFW_FOCUSED ? app_focused : a == GLFW_VISIBLE || a == GLFW_HOVERED; }
 API void glfwSetWindowUserPointer(Win *w, void *p) { if (w) w->user = p; }
 API void *glfwGetWindowUserPointer(Win *w) { return w ? w->user : NULL; }
 API float glfwGetWindowOpacity(Win *w) { (void)w; return 1; }
@@ -367,6 +370,12 @@ API void glfwPollEvents(void) {
         }
     }
     touch_frame();
+    static int was_focused = 1;
+    if (app_focused != was_focused) {   // tell the game; nothing on screen stays held while away
+        was_focused = app_focused;
+        if (!was_focused) release_all();
+        if (cb.focus) cb.focus(&win, was_focused);
+    }
     if (pad_seen) pad_kbm();
 }
 API void glfwWaitEvents(void) { glfwPollEvents(); }
@@ -482,7 +491,7 @@ static int handle_input(AInputEvent *e) {
         unsigned pb = akey_to_pad(k);
         if (from_pad && (k == AKEYCODE_DPAD_UP || k == AKEYCODE_DPAD_DOWN || k == AKEYCODE_DPAD_LEFT || k == AKEYCODE_DPAD_RIGHT))
             pb = k == AKEYCODE_DPAD_UP ? PB_UP : k == AKEYCODE_DPAD_DOWN ? PB_DOWN : k == AKEYCODE_DPAD_LEFT ? PB_LEFT : PB_RIGHT;
-        if (pb) { pad_seen = 1; pad_key_bits = down ? pad_key_bits | pb : pad_key_bits & ~pb; return 1; }
+        if (pb) { pad_seen = 1; pad_active = 1; pad_key_bits = down ? pad_key_bits | pb : pad_key_bits & ~pb; return 1; }
         if (k == AKEYCODE_VOLUME_UP || k == AKEYCODE_VOLUME_DOWN) return 0;   // let the system change the volume
         int g = akey_to_glfw(k);
         if (g < 0) return 0;
@@ -492,7 +501,7 @@ static int handle_input(AInputEvent *e) {
         return 1;
     }
     if (from_pad) {   // sticks, triggers, D-pad as a hat
-        pad_seen = 1;
+        pad_seen = 1; pad_active = 1;
         pad_ax[0] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0);
         pad_ax[1] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0);
         pad_ax[2] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Z, 0);
@@ -549,7 +558,7 @@ static void hide_system_bars(ANativeActivity *a) {
     (*env)->DeleteLocalRef(env, ctl); (*env)->DeleteLocalRef(env, types); (*env)->DeleteLocalRef(env, wc);
     (*env)->DeleteLocalRef(env, window); (*env)->DeleteLocalRef(env, act);
 }
-static void on_focus(ANativeActivity *a, int focused) { if (focused) hide_system_bars(a); }
+static void on_focus(ANativeActivity *a, int focused) { LOG("focus %d", focused); app_focused = focused; if (focused) hide_system_bars(a); }
 
 // --- NativeActivity callbacks (UI thread) ---
 static void on_window_created(ANativeActivity *a, ANativeWindow *w) {
