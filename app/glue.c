@@ -34,6 +34,7 @@ static AInputQueue *input_queue;
 static int H = 720, W = 1280;          // render size: 720 lines, width from the screen's aspect
 static int screen_w = 1, screen_h = 1; // the window's own size, for touch coordinates
 static int app_closing;
+static volatile int size_changed = 1;   // the game hears about the render size on the next poll (start, rotation, resume)
 
 // --- stdout/stderr -> logcat ---
 static void *log_pump(void *fdp) {
@@ -146,6 +147,10 @@ static struct {
 API int glfwInit(void) { return 1; }
 API void glfwTerminate(void) {}
 
+// The window the current surface belongs to. Left unset by glfwCreateWindow on purpose: the first swap then makes the
+// surface again and makes the context current once more, and gl4es needs that (without it the first draw dies inside
+// gl4es on a null state pointer).
+static ANativeWindow *surf_window;
 static int make_surface(void) {
     pthread_mutex_lock(&lock);
     while (!window && !app_closing) pthread_cond_wait(&cond, &lock);
@@ -153,7 +158,8 @@ static int make_surface(void) {
     pthread_mutex_unlock(&lock);
     if (!w) return 0;
     screen_w = ANativeWindow_getWidth(w); screen_h = ANativeWindow_getHeight(w);
-    W = screen_h ? (int)((long)H * screen_w / screen_h) & ~1 : 1280;
+    int nw = screen_h ? (int)((long)H * screen_w / screen_h) & ~1 : 1280;
+    if (nw != W) { W = nw; size_changed = 1; }
     EGLint fmt; eglGetConfigAttrib(dpy, cfg, EGL_NATIVE_VISUAL_ID, &fmt);
     ANativeWindow_setBuffersGeometry(w, W, H, fmt);   // the compositor scales it up to the screen
     surf = eglCreateWindowSurface(dpy, cfg, w, NULL);
@@ -186,7 +192,7 @@ API Win *glfwGetCurrentContext(void) { return current; }
 // The app went to the background: Android destroys the window, so the surface goes with it, and a new one is made when
 // the window comes back. Frames in between are skipped.
 static double now_s(void);
-static ANativeWindow *surf_window;
+static void draw_overlay(void);
 API void glfwSwapBuffers(Win *w) {
     (void)w;
     pthread_mutex_lock(&lock);
@@ -200,6 +206,7 @@ API void glfwSwapBuffers(Win *w) {
         eglMakeCurrent(dpy, surf, surf, ctx);
         return;
     }
+    draw_overlay();
     eglSwapBuffers(dpy, surf);
     // frame rate and the longest frame, every 5 s, in logcat
     static double since, last; static int frames; static double worst;
@@ -271,12 +278,12 @@ static volatile unsigned pad_bits, pad_key_bits;   // pad_key_bits: from key eve
 static volatile float pad_ax[6];                    // LX LY RX RY LT RT, Y down positive (Android's convention)
 static volatile int pad_seen;
 
-static unsigned char keys[512], kb_keys[512], pad_keys[512];
+static unsigned char keys[512], kb_keys[512], pad_keys[512], touch_keys[512];
 static double mouse_x, mouse_y;
-static int touch_down, pad_buttons[3];
+static int touch_down, pad_buttons[3], touch_buttons[3];
 static int cursor_mode = GLFW_CURSOR_NORMAL;
 static void key_update(int k, int sc, int mods) {
-    int down = kb_keys[k] | pad_keys[k];
+    int down = kb_keys[k] | pad_keys[k] | touch_keys[k];
     if (keys[k] == down) return;
     keys[k] = down;
     if (cb.key) cb.key(&win, k, sc, down ? GLFW_PRESS : GLFW_RELEASE, mods);
@@ -334,6 +341,8 @@ static int glfw_to_char(int k, int shift) {
     return 0;
 }
 
+#include "touch.h"
+
 API void glfwPollEvents(void) {
     static Ev local[1024];
     pthread_mutex_lock(&lock);
@@ -341,9 +350,8 @@ API void glfwPollEvents(void) {
     int closing = app_closing;
     pthread_mutex_unlock(&lock);
     if (closing && !win.should_close) { win.should_close = 1; if (cb.close) cb.close(&win); }
-    static int told_size;
-    if (!told_size && (cb.fbsize || cb.size)) {
-        told_size = 1;
+    if (size_changed && (cb.fbsize || cb.size)) {
+        size_changed = 0;
         if (cb.size) cb.size(&win, W, H);
         if (cb.fbsize) cb.fbsize(&win, W, H);
     }
@@ -355,32 +363,18 @@ API void glfwPollEvents(void) {
         } else if (e->type == EV_CHAR) {
             if (cb.chr) cb.chr(&win, e->a);
         } else if (e->type == EV_TOUCH) {
-            // a: 0 down, 1 move, 2 up. In menus the finger is the pointer and touching is the left button; in game
-            // (cursor captured) a drag turns the view and the touch only clicks if it was a short tap.
-            static double tx, ty, t_start; static int moved;
-            double x = e->x * W / screen_w, y = e->y * H / screen_h;
-            if (cursor_mode == GLFW_CURSOR_DISABLED) {
-                if (e->a == 0) { tx = x; ty = y; t_start = now_s(); moved = 0; }
-                else if (e->a == 1) {
-                    double dx = (x - tx) * 2, dy = (y - ty) * 2; tx = x; ty = y;
-                    if (fabs(dx) + fabs(dy) > 0.5) moved = 1;
-                    mouse_x += dx; mouse_y += dy; if (cb.cursor) cb.cursor(&win, mouse_x, mouse_y);
-                } else if (!moved && now_s() - t_start < 0.25 && cb.button) { cb.button(&win, 1, 1, 0); cb.button(&win, 1, 0, 0); }
-            } else {
-                mouse_x = x; mouse_y = y;
-                if (cb.cursor) cb.cursor(&win, x, y);
-                int down = e->a != 2;
-                if (down != touch_down) { touch_down = down; if (cb.button) cb.button(&win, 0, down, 0); }
-            }
+            touch_event(e->a, e->b, e->x * W / screen_w, e->y * H / screen_h);
         }
     }
+    touch_frame();
     if (pad_seen) pad_kbm();
 }
 API void glfwWaitEvents(void) { glfwPollEvents(); }
 API void glfwWaitEventsTimeout(double t) { (void)t; glfwPollEvents(); }
 API void glfwPostEmptyEvent(void) {}
 API int glfwGetKey(Win *w, int k) { (void)w; return k >= 0 && k < 512 ? keys[k] : 0; }
-API int glfwGetMouseButton(Win *w, int b) { (void)w; return b >= 0 && b < 3 ? (b == 0 && touch_down) || pad_buttons[b] : 0; }
+
+API int glfwGetMouseButton(Win *w, int b) { (void)w; return b >= 0 && b < 3 ? (b == 0 && touch_down) || pad_buttons[b] || touch_buttons[b] : 0; }
 API void glfwGetCursorPos(Win *w, double *x, double *y) { (void)w; if (x) *x = mouse_x; if (y) *y = mouse_y; }
 API void glfwSetCursorPos(Win *w, double x, double y) { (void)w; mouse_x = x; mouse_y = y; }
 API int glfwGetInputMode(Win *w, int m) { (void)w; return m == GLFW_CURSOR ? cursor_mode : 0; }
@@ -513,11 +507,16 @@ static int handle_input(AInputEvent *e) {
         pad_bits = b;
         return 1;
     }
-    int act = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK;
-    float x = AMotionEvent_getX(e, 0), y = AMotionEvent_getY(e, 0);
-    if (act == AMOTION_EVENT_ACTION_DOWN) push((Ev){ EV_TOUCH, 0, 0, x, y });
-    else if (act == AMOTION_EVENT_ACTION_MOVE) push((Ev){ EV_TOUCH, 1, 0, x, y });
-    else if (act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_CANCEL) push((Ev){ EV_TOUCH, 2, 0, x, y });
+    // every finger, by pointer id: a = 0 down, 1 move, 2 up
+    int action = AMotionEvent_getAction(e), act = action & AMOTION_EVENT_ACTION_MASK;
+    int idx = (action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+    size_t np = AMotionEvent_getPointerCount(e);
+#define TOUCH(i, a) push((Ev){ EV_TOUCH, (a), AMotionEvent_getPointerId(e, (i)), AMotionEvent_getX(e, (i)), AMotionEvent_getY(e, (i)) })
+    if (act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN) TOUCH(idx, 0);
+    else if (act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_POINTER_UP) TOUCH(idx, 2);
+    else if (act == AMOTION_EVENT_ACTION_MOVE) for (size_t i = 0; i < np; i++) TOUCH(i, 1);
+    else if (act == AMOTION_EVENT_ACTION_CANCEL) for (size_t i = 0; i < np; i++) TOUCH(i, 2);
+#undef TOUCH
     return 1;
 }
 static int on_input(int fd, int events, void *data) {

@@ -10,3 +10,4 @@ probe/h
 probe/*.class
 *.log
 debug.keystore
+mc-android.jar

@@ -3,7 +3,7 @@
 # image: relocatable object build/mc.o for link-apk.sh. The CAP cache (bionic struct layouts and constants) is measured
 # on the phone through ndk-cap-cc; pass CAP=use once cap/ is complete to skip that.
 cd "$(dirname "$0")"; M=~/mc-switch
-CP=$M/mc-optifine.jar:$M/lwjgl3/pojav-noglfw.jar:$M/lwjgl3/lwjgl-glfw-3.3.3.jar:$(find $M/game/libraries -name '*.jar' | sort | tr '\n' ':')
+CP=$PWD/mc-android.jar:$M/lwjgl3/pojav-noglfw.jar:$M/lwjgl3/lwjgl-glfw-3.3.3.jar:$(find $M/game/libraries -name '*.jar' | sort | tr '\n' ':')
 if [ "$CAP" = use ]; then CAPF="-H:+UseCAPCache"; else CAPF="-H:-UseCAPCache -H:+NewCAPCache"; mkdir -p cap; fi
 mkdir -p build && cd build && rm -rf tmp mc.o
 ~/graalvm-25/x64/bin/native-image -cp "$CP" \

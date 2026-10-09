@@ -25,11 +25,16 @@ side.alpha_composite(tinted(rgba('grass_side_overlay.png')))
 S = 4                      # supersampling, then a smooth downscale
 W = size * S
 m = W * 0.06               # margin
-w = W - 2 * m              # cube width
-a = (w / 2, w / 4)         # right-down edge
-b = (-w / 2, w / 4)        # left-down edge
-d = (0, w / 2 + 0.0)       # down edge
-T = (W / 2, m + (W - 2 * m - (w / 2 + w / 2)) / 2)   # top vertex, centred vertically
+# true isometric (edges at 30 degrees, all three edges the same length), like the launcher's block: the cube is
+# 2/sqrt(3) as tall as it is wide, so the height decides the size
+import math
+h = W - 2 * m
+w = h * math.sqrt(3) / 2   # cube width
+e = w / math.sqrt(3)       # edge length (w/2 / cos 30)
+a = (w / 2, e / 2)         # right-down edge
+b = (-w / 2, e / 2)        # left-down edge
+d = (0, e)                 # down edge
+T = (W / 2, m)             # top vertex
 img = Image.new('RGBA', (W, W), (0, 0, 0, 0))
 dr = ImageDraw.Draw(img)
 
