@@ -35,13 +35,31 @@ static int H = 720, W = 1280;          // render size: 720 lines, width from the
 static int screen_w = 1, screen_h = 1; // the window's own size, for touch coordinates
 static int app_closing;
 static ANativeActivity *activity;
+// A method of the activity (McActivity.java), from any thread: attached to the VM for the call
+static void call_activity(const char *name, const char *sig, int arg) {
+    if (!activity) return;
+    JNIEnv *env; int attached = 0;
+    if ((*activity->vm)->GetEnv(activity->vm, (void **)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*activity->vm)->AttachCurrentThread(activity->vm, &env, NULL) != JNI_OK) return;
+        attached = 1;
+    }
+    jclass c = (*env)->GetObjectClass(env, activity->clazz);
+    jmethodID m = (*env)->GetMethodID(env, c, name, sig);
+    if (m) { if (sig[1] == 'Z') (*env)->CallVoidMethod(env, activity->clazz, m, (jboolean)arg); else (*env)->CallVoidMethod(env, activity->clazz, m); }
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionDescribe(env); (*env)->ExceptionClear(env); }
+    (*env)->DeleteLocalRef(env, c);
+    if (attached) (*activity->vm)->DetachCurrentThread(activity->vm);
+}
+// The on-screen keyboard: McActivity's invisible text editor (KeyboardView.java), as ANativeActivity_showSoftInput
+// does nothing on current Android. Typed characters come back through nativeChar/nativeKey below.
 static int keyboard_shown;
 static void keyboard(int show) {
-    if (!activity || show == keyboard_shown) return;
+    if (show == keyboard_shown) return;
     keyboard_shown = show;
-    if (show) ANativeActivity_showSoftInput(activity, ANATIVEACTIVITY_SHOW_SOFT_INPUT_FORCED);
-    else ANativeActivity_hideSoftInput(activity, 0);
+    call_activity("showKeyboard", "(Z)V", show);
 }
+static void open_settings(void) { call_activity("openSettings", "()V", 0); }
+static volatile int requested_H;   // render height asked for in the settings (McActivity.openSettings)
 static volatile int app_focused = 1;    // the activity has the window focus; lost in the background, so the game pauses
 static volatile int pad_active;         // a controller is in use: on-screen controls hidden until the screen is touched
 static volatile int size_changed = 1;   // the game hears about the render size on the next poll (start, rotation, resume)
@@ -83,6 +101,18 @@ JNIEXPORT void JNICALL Java_com_etonedemid_mc_McActivity_nativeLogin(JNIEnv *env
     pthread_cond_broadcast(&cond);
     pthread_mutex_unlock(&lock);
     LOG("account: %s", login_name[0] ? login_name : "offline");
+}
+
+// --- from the activity: typed text, render resolution ---
+enum { EV_KEY_, EV_CHAR_ };   // (the event queue below; same numbers as EV_KEY/EV_CHAR)
+static void push_ev(int type, int a, int b);
+JNIEXPORT void JNICALL Java_com_etonedemid_mc_KeyboardView_nativeChar(JNIEnv *env, jclass c, jint cp) { (void)env; (void)c; push_ev(EV_CHAR_, cp, 0); }
+JNIEXPORT void JNICALL Java_com_etonedemid_mc_KeyboardView_nativeKey(JNIEnv *env, jclass c, jint k) {
+    (void)env; (void)c; push_ev(EV_KEY_, k, 1); push_ev(EV_KEY_, k, 0);
+}
+JNIEXPORT void JNICALL Java_com_etonedemid_mc_McActivity_nativeSetResolution(JNIEnv *env, jclass c, jint h) {
+    (void)env; (void)c;
+    if (h >= 360 && h <= 4320) requested_H = h;
 }
 
 // --- the game thread ---
@@ -129,6 +159,7 @@ static void *game_thread(void *arg) {
     pthread_mutex_lock(&lock);
     if (window) { screen_w = ANativeWindow_getWidth(window); screen_h = ANativeWindow_getHeight(window); }
     pthread_mutex_unlock(&lock);
+    if (requested_H) H = requested_H;
     if (screen_h > 1) W = (int)((long)H * screen_w / screen_h) & ~1;
     static char ws[16], hs[16];
     snprintf(ws, sizeof ws, "%d", W); snprintf(hs, sizeof hs, "%d", H);
@@ -231,6 +262,9 @@ API void glfwSwapBuffers(Win *w) {
     pthread_mutex_lock(&lock);
     ANativeWindow *now = window;
     pthread_mutex_unlock(&lock);
+    if (requested_H && requested_H != H) {   // a new render resolution: rebuild the surface at that size
+        H = requested_H; size_changed = 1; surf_window = NULL;
+    }
     if (now != surf_window || surf == EGL_NO_SURFACE) {
         if (surf != EGL_NO_SURFACE) { eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT); eglDestroySurface(dpy, surf); surf = EGL_NO_SURFACE; }
         if (!now) { usleep(50000); return; }
@@ -304,6 +338,7 @@ typedef struct { int type, a, b; float x, y; } Ev;
 static Ev evq[1024];
 static int evq_n;
 static void push(Ev e) { pthread_mutex_lock(&lock); if (evq_n < 1024) evq[evq_n++] = e; pthread_mutex_unlock(&lock); }
+static void push_ev(int type, int a, int b) { push((Ev){ type, a, b }); }
 
 // controller state, written by the UI thread: buttons as bits, sticks/triggers -1..1
 enum { PB_A = 1, PB_B = 2, PB_X = 4, PB_Y = 8, PB_L = 16, PB_R = 32, PB_ZL = 64, PB_ZR = 128, PB_MINUS = 256, PB_PLUS = 512,

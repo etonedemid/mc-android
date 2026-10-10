@@ -9,6 +9,8 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.ViewGroup;
+import android.view.inputmethod.InputMethodManager;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -37,8 +39,44 @@ public class McActivity extends NativeActivity {
     private SharedPreferences prefs;
     private boolean decided;
 
+    // --- on-screen keyboard (the keyboard and chat buttons, from touch.h via glue.c) ---
+    private KeyboardView keyboard;
+    public void showKeyboard(boolean on) {
+        runOnUiThread(() -> {
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (on) { keyboard.requestFocus(); imm.showSoftInput(keyboard, InputMethodManager.SHOW_FORCED); }
+            else imm.hideSoftInputFromWindow(keyboard.getWindowToken(), 0);
+        });
+    }
+
+    // --- render resolution (the settings button, from touch.h via glue.c): lines rendered, scaled up to the screen ---
+    static native void nativeSetResolution(int height);
+    public void openSettings() {
+        runOnUiThread(() -> {
+            int screen = Math.min(getResources().getDisplayMetrics().widthPixels, getResources().getDisplayMetrics().heightPixels);
+            int[] heights = { 480, 540, 720, 900, screen };
+            String[] labels = new String[heights.length];
+            int cur = getSharedPreferences("video", Context.MODE_PRIVATE).getInt("height", 720), sel = 2;
+            for (int i = 0; i < heights.length; i++) {
+                labels[i] = (i == heights.length - 1 ? "Native (" + screen + "p)" : heights[i] + "p")
+                    + (heights[i] == 720 ? " - default" : "");
+                if (heights[i] == cur) sel = i;
+            }
+            new AlertDialog.Builder(this).setTitle("Render resolution")
+                .setSingleChoiceItems(labels, sel, (d, w) -> {
+                    getSharedPreferences("video", Context.MODE_PRIVATE).edit().putInt("height", heights[w]).apply();
+                    nativeSetResolution(heights[w]);
+                    d.dismiss();
+                })
+                .setNegativeButton("Cancel", null).show();
+        });
+    }
+
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        keyboard = new KeyboardView(this);
+        addContentView(keyboard, new ViewGroup.LayoutParams(1, 1));
+        nativeSetResolution(getSharedPreferences("video", Context.MODE_PRIVATE).getInt("height", 720));
         if (saved != null) return;   // recreated: the game is already running with its account
         prefs = getSharedPreferences("account", Context.MODE_PRIVATE);
         String refresh = prefs.getString("refresh_token", null);
