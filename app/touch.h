@@ -7,8 +7,10 @@
 //   layout: a move button over screens opened from the game enters edit mode: every control shows, drag them where you
 //           like (the D-pad moves as one, sneak at its middle), Done saves, Reset puts them back. Kept in controls.txt
 //           in the data dir as offsets in screen heights.
-//   menus:  keyboard and settings (render resolution) buttons at the top left (soft keyboard for chat, signs, names); over a screen opened from the
-//           game, a close button at the top right
+//   menus:  keyboard and settings (render resolution) buttons at the top left; over a screen opened from the game, a
+//           close button at the top right
+//   keyboard: our own, Minecraft-styled (Android's doesn't come up over a NativeActivity), at the top of the screen so
+//           the chat line stays visible (a key moves it to the bottom and back). Opened by the keyboard and chat buttons.
 //   hotbar: tap a slot to select it
 //   elsewhere: drag to look, short tap to attack (left click), hold still to break (left button held)
 //
@@ -177,12 +179,100 @@ static const char *G_MOVE = "...##..." "..####.." ".#.##.#." "########" "#######
 static const char *G_CHECK = "........" ".......#" "......##" "#....##." "##..##.." ".####..." "..##...." "........";
 static const char *G_RESET = "..####.." ".#....##" "#....###" "#......." "#......#" "#......#" ".#....#." "..####..";
 static const char *G_CLOSE = "##....##" "###..###" ".######." "..####.." "..####.." ".######." "###..###" "##....##";
-#define NGLYPHS 20   // atlas cells (16x16): 0 is solid, then these in order
+#define NGLYPHS 20   // atlas cells (16x16): 0 is solid, then these in order, then the font (mcfont.h, ASCII 32..126)
+#include "mcfont.h"
+#define NCELLS (NGLYPHS + 95)
+#define FONT_CELL(c) (NGLYPHS + (c) - 32)
 static const char **all_glyphs(void) {
     static const char *all[NGLYPHS];
     const char *g[NGLYPHS] = { NULL, G_UP, G_DOWN, G_LEFT, G_RIGHT, G_JUMP, G_SNEAK, G_DROP, G_INV, G_PAUSE, G_CAM, G_CLOSE, G_USE, G_KEYB, G_CHAT, G_MOVE, G_CHECK, G_RESET, G_F3, G_GEAR };
     memcpy(all, g, sizeof g);
     return all;
+}
+
+// --- the on-screen keyboard: 5 rows of 13 units, two pages (letters, symbols) ---
+enum { KK_CHAR, KK_KEY, KK_SHIFT, KK_PAGE, KK_PASTE, KK_PLACE, KK_HIDE };
+typedef struct { const char *label; float w; int kind, code; const char *glyph; } Key;   // code: a character or GLFW key
+enum { KB_ROWS = 5, KB_UNITS = 13, KB_PLACE = 99 /* its line in controls.txt */ };
+static Key kb_table[2][KB_ROWS][16];
+static int kb_count[2][KB_ROWS];
+static int kb_page, kb_shift, kb_bottom;   // shift: 1 for the next letter, 2 locked
+static float kb_x, kb_y, kb_w, kb_h, kb_px;   // kb_px: one Minecraft GUI pixel
+static int kb_down = -1; static double kb_next;   // the key held (page*256 + row*16 + index) and when it repeats
+static void kb_add(int pg, int r, const char *label, float w, int kind, int code, const char *glyph) {
+    kb_table[pg][r][kb_count[pg][r]++] = (Key){ label, w, kind, code, glyph };
+}
+static void kb_build(void) {
+    if (kb_count[0][0]) return;
+    static const char *chars[2][4] = { { "1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm,." },
+                                       { "!@#$%^&*()", "~`-_=+[]{}", ":;'\"<>?\\/", "@~^*+=%,." } };
+    for (int pg = 0; pg < 2; pg++) {
+        kb_add(pg, 0, "Esc", 1.5f, KK_KEY, 256, NULL);
+        kb_add(pg, 1, "Tab", 1.5f, KK_KEY, 258, NULL);
+        kb_add(pg, 2, pg ? "ABC" : "?123", 1.5f, KK_PAGE, 0, NULL);
+        kb_add(pg, 3, "Shift", 2, KK_SHIFT, 0, NULL);
+        for (int r = 0; r < 4; r++) for (const char *c = chars[pg][r]; *c; c++) kb_add(pg, r, NULL, 1, KK_CHAR, *c, NULL);
+        kb_add(pg, 0, "Bksp", 1.5f, KK_KEY, 259, NULL);
+        kb_add(pg, 1, NULL, 1.5f, KK_CHAR, pg ? '|' : '/', NULL);
+        kb_add(pg, 2, "Enter", 2.5f, KK_KEY, 257, NULL);
+        kb_add(pg, 3, "Shift", 2, KK_SHIFT, 0, NULL);
+        kb_add(pg, 4, "Hide", 1.5f, KK_HIDE, 0, NULL);
+        kb_add(pg, 4, "Paste", 1.5f, KK_PASTE, 0, NULL);
+        kb_add(pg, 4, NULL, 1, KK_PLACE, 0, G_MOVE);
+        kb_add(pg, 4, NULL, 5, KK_CHAR, ' ', NULL);
+        kb_add(pg, 4, NULL, 1, KK_KEY, 263, G_LEFT);
+        kb_add(pg, 4, NULL, 1, KK_KEY, 265, G_UP);
+        kb_add(pg, 4, NULL, 1, KK_KEY, 264, G_DOWN);
+        kb_add(pg, 4, NULL, 1, KK_KEY, 262, G_RIGHT);
+    }
+}
+static void kb_layout(void) {
+    kb_build();
+    float m = 8 * H / 720.f;
+    kb_w = fminf(W - 2 * m, H * 2.2f); kb_h = H * 0.44f;
+    kb_x = (W - kb_w) / 2; kb_y = kb_bottom ? H - kb_h - m : m;
+    kb_px = fmaxf(1, floorf(kb_h / KB_ROWS / 20));   // a key is about a Minecraft button tall: 20 GUI pixels
+}
+static void kb_rect(int r, int i, float *x, float *y, float *w, float *h) {   // key i of row r on the current page
+    float u = kb_w / KB_UNITS, rh = kb_h / KB_ROWS, kx = kb_x;
+    for (int j = 0; j < i; j++) kx += kb_table[kb_page][r][j].w * u;
+    *x = kx; *y = kb_y + r * rh; *w = kb_table[kb_page][r][i].w * u; *h = rh;
+}
+static int kb_hit(double x, double y) {
+    for (int r = 0; r < KB_ROWS; r++)
+        for (int i = 0; i < kb_count[kb_page][r]; i++) {
+            float kx, ky, kw, kh; kb_rect(r, i, &kx, &ky, &kw, &kh);
+            if (x >= kx && x < kx + kw && y >= ky && y < ky + kh) return kb_page * 256 + r * 16 + i;
+        }
+    return -1;
+}
+static Key *kb_key(int id) { return &kb_table[id / 256][id / 16 % 16][id % 16]; }
+static void save_layout(void);
+static void kb_press(int id) {   // a key's action, on touching it (and again as it repeats)
+    Key *k = kb_key(id);
+    switch (k->kind) {
+    case KK_CHAR: {
+        int c = k->code;
+        if (kb_shift && c >= 'a' && c <= 'z') c -= 32;
+        if (kb_shift == 1) kb_shift = 0;
+        if (cb.chr) cb.chr(&win, c);
+        break;
+    }
+    case KK_KEY:   // pressed and released: the game types on the press
+        touch_keys[k->code] = 1; key_update(k->code, 0, 0); touch_keys[k->code] = 0; key_update(k->code, 0, 0);
+        break;
+    case KK_SHIFT: kb_shift = (kb_shift + 1) % 3; break;   // once, locked, off
+    case KK_PAGE: kb_page ^= 1; kb_down = -1; break;
+    case KK_PASTE: paste(); break;
+    case KK_PLACE: kb_bottom ^= 1; save_layout(); break;
+    case KK_HIDE: keyboard(0); break;
+    }
+}
+static void kb_frame(void) {   // Backspace and the arrows repeat while held
+    if (kb_down < 0 || now_s() < kb_next) return;
+    Key *k = kb_key(kb_down);
+    if (k->kind != KK_KEY || k->code == 256 || k->code == 257 || k->code == 258) return;
+    kb_press(kb_down); kb_next = now_s() + 0.05;
 }
 
 static void layout(void) {
@@ -219,7 +309,10 @@ static void load_layout(void) {
     FILE *f = fopen(p, "r");
     if (!f) return;
     int i; float x, y;
-    while (fscanf(f, "%d %f %f", &i, &x, &y) == 3) if (i >= 0 && i < NBUTTONS) { offs[i][0] = x; offs[i][1] = y; }
+    while (fscanf(f, "%d %f %f", &i, &x, &y) == 3) {
+        if (i >= 0 && i < NBUTTONS) { offs[i][0] = x; offs[i][1] = y; }
+        if (i == KB_PLACE) kb_bottom = x != 0;
+    }
     fclose(f);
 }
 static void save_layout(void) {
@@ -227,6 +320,7 @@ static void save_layout(void) {
     FILE *f = fopen(p, "w");
     if (!f) return;
     for (int i = 0; i < NBUTTONS; i++) if (offs[i][0] || offs[i][1]) fprintf(f, "%d %.4f %.4f\n", i, offs[i][0], offs[i][1]);
+    if (kb_bottom) fprintf(f, "%d 1 0\n", KB_PLACE);
     fclose(f);
 }
 static void read_gui_scale(void) {
@@ -312,6 +406,15 @@ static void touch_event(int a, int id, double x, double y) {
         for (int i = 0; i < 10 && !f; i++) if (!fingers[i].role) f = &fingers[i];
         if (!f) return;
         *f = (Finger){ id, R_NONE, -1, 0, 0, x, y, x, y, now_s() };
+        if (!ingame && keyboard_shown) {   // the on-screen keyboard, over everything else
+            kb_layout();
+            if (x >= kb_x && x < kb_x + kb_w && y >= kb_y && y < kb_y + kb_h) {
+                f->role = R_BUTTON; f->button = -3;
+                int id = kb_hit(x, y);
+                if (id >= 0) { kb_down = id; kb_next = now_s() + 0.4; kb_press(id); }
+                return;
+            }
+        }
         if (!ingame) {             // the keyboard button, in every menu
             layout();
             if (in(&keyboard_button, x, y, 8)) {
@@ -388,6 +491,7 @@ static void touch_event(int a, int id, double x, double y) {
     if (f->role == R_MOUSE) { touch_down = 0; if (cb.button) cb.button(&win, 0, 0, 0); }
     else if (f->role == R_PAD) pad_update(pad_cx, pad_cy);
     else if (f->role == R_BUTTON && f->button == -2) {}   // keyboard button: toggled on press
+    else if (f->role == R_BUTTON && f->button == -3) kb_down = -1;   // a key of the keyboard: acted on press
     else if (f->role == R_BUTTON && f->button < 0) { close_button.pressed = 0; touch_key(K_ESC, 0); }
     else if (f->role == R_BUTTON && buttons[f->button].action == ACT_MOUSE) { buttons[f->button].pressed = 0; touch_button(buttons[f->button].key, 0); }
     else if (f->role == R_BUTTON && buttons[f->button].action == ACT_KEY) { buttons[f->button].pressed = 0; touch_key(buttons[f->button].key, 0); }
@@ -399,6 +503,7 @@ static void touch_event(int a, int id, double x, double y) {
 }
 // every frame: a look finger held still for 0.3 s starts breaking (left button held until it lifts)
 static void touch_frame(void) {
+    kb_frame();
     if (cursor_mode != GLFW_CURSOR_DISABLED) return;
     double t = now_s();
     for (int i = 0; i < 10; i++) {
@@ -438,7 +543,7 @@ static void overlay_init(void) {
     // the glyph atlas: one row of 16x16 cells (cell 0 solid), alpha only, sampled nearest for crisp pixels
     const char **all = all_glyphs();
     // 16x16 cells: 16x16 glyphs as they are, 8x8 ones doubled
-    static unsigned char px[16][NGLYPHS * 16];
+    static unsigned char px[16][NCELLS * 16];
     for (int g = 0; g < NGLYPHS; g++) {
         int n = all[g] && strlen(all[g]) == 256 ? 16 : 8;
         for (int y = 0; y < 16; y++)
@@ -447,9 +552,12 @@ static void overlay_init(void) {
                 px[y][g * 16 + x] = !all[g] || all[g][sy * n + sx] == '#' ? 255 : 0;
             }
     }
+    for (int c = 0; c < 95; c++)   // the font: 8x8, doubled
+        for (int y = 0; y < 16; y++)
+            for (int x = 0; x < 16; x++) px[y][(NGLYPHS + c) * 16 + x] = MCFONT[c][y / 2] & (0x80 >> x / 2) ? 255 : 0;
     glGenTextures(1, &atlas); glBindTexture(GL_TEXTURE_2D, atlas);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, NGLYPHS * 16, 16, 0, GL_ALPHA, GL_UNSIGNED_BYTE, px);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_ALPHA, NCELLS * 16, 16, 0, GL_ALPHA, GL_UNSIGNED_BYTE, px);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     read_gui_scale();
@@ -457,8 +565,8 @@ static void overlay_init(void) {
     (void)glyphs;
 }
 static void quad(float x, float y, float w, float h, int g, float r, float gr, float b, float a) {
-    float u0 = (g * 16 + 0.5f) / (NGLYPHS * 16.f), u1 = (g * 16 + 15.5f) / (NGLYPHS * 16.f);   // solid: away from the edges
-    if (g) { u0 = g * 16 / (NGLYPHS * 16.f); u1 = (g * 16 + 16) / (NGLYPHS * 16.f); }
+    float u0 = (g * 16 + 0.5f) / (NCELLS * 16.f), u1 = (g * 16 + 15.5f) / (NCELLS * 16.f);   // solid: away from the edges
+    if (g) { u0 = (g * 16 + 0.5f) / (NCELLS * 16.f); u1 = (g * 16 + 15.5f) / (NCELLS * 16.f); }   // inside the cell: no neighbour's edge
     float v[] = { x, y, u0, 0, x + w, y, u1, 0, x, y + h, u0, 1, x + w, y + h, u1, 1 };
     glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 16, v); glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, v + 2);
     glUniform4f(u_color, r * a, gr * a, b * a, a);   // premultiplied
@@ -470,6 +578,54 @@ static void draw_button(float x, float y, float w, float h, int glyph, int press
     quad(x + e, y + e, w - 2 * e, h - 2 * e, 0, 0, 0, 0, pressed ? 0.25f : 0.4f); // face
     float gs = fminf(w, h) * 0.5f;
     quad(x + (w - gs) / 2, y + (h - gs) / 2, gs, gs, glyph, 1, 1, 1, pressed ? 1.f : 0.8f);
+}
+// Minecraft's text: its font, with the shadow a GUI pixel down and right at a quarter of the colour
+static float text_width(const char *t, float p) { float w = 0; for (; *t; t++) w += MCFONT_ADV[*t - 32] * p; return w - p; }
+static void draw_text(float x, float y, float p, const char *t, float r, float g, float b) {
+    for (int pass = 0; pass < 2; pass++) {
+        float cx = x + (pass ? 0 : p), cy = y + (pass ? 0 : p), k = pass ? 1 : 0.25f;
+        for (const char *c = t; *c; c++) {
+            if (*c > 32 && *c < 127) quad(cx, cy, 8 * p, 8 * p, FONT_CELL(*c), r * k, g * k, b * k, 1);
+            cx += MCFONT_ADV[*c - 32] * p;
+        }
+    }
+}
+// a Minecraft button: black outline, grey face lit at the top left and shaded at the bottom right; blue when held
+static void draw_mc_button(float x, float y, float w, float h, float p, int held, int lit) {
+    quad(x, y, w, h, 0, 0, 0, 0, 0.9f);
+    float f = held ? 0.48f : lit ? 0.56f : 0.44f, fb = held ? 0.72f : f;
+    quad(x + p, y + p, w - 2 * p, h - 2 * p, 0, f, held ? 0.52f : f, fb, 0.92f);
+    quad(x + p, y + p, w - 2 * p, p, 0, 1, 1, 1, 0.25f);           // lit top
+    quad(x + p, y + 2 * p, p, h - 3 * p, 0, 1, 1, 1, 0.25f);       // and left
+    quad(x + p, y + h - 2 * p, w - 2 * p, p, 0, 0, 0, 0, 0.3f);    // shaded bottom
+    quad(x + w - 2 * p, y + 2 * p, p, h - 4 * p, 0, 0, 0, 0, 0.3f); // and right
+}
+static void draw_keyboard(void) {
+    kb_layout();
+    float p = kb_px, m = 2 * p;
+    quad(kb_x - m, kb_y - m, kb_w + 2 * m, kb_h + 2 * m, 0, 0, 0, 0, 0.55f);   // the chat's dark backing
+    for (int r = 0; r < KB_ROWS; r++)
+        for (int i = 0; i < kb_count[kb_page][r]; i++) {
+            Key *k = &kb_table[kb_page][r][i];
+            int id = kb_page * 256 + r * 16 + i;
+            float x, y, w, h; kb_rect(r, i, &x, &y, &w, &h);
+            x += p / 2; y += p / 2; w -= p; h -= p;
+            int lit = k->kind == KK_SHIFT && kb_shift;
+            draw_mc_button(x, y, w, h, p, kb_down == id, lit);
+            float tr = 0.88f, tg = 0.88f, tb = 0.88f;   // label: light grey, Minecraft's yellow when held or on
+            if (kb_down == id || lit) { tr = 1; tg = 1; tb = 0.63f; }
+            if (k->glyph) {
+                float gs = 8 * p;
+                quad(x + (w - gs) / 2, y + (h - gs) / 2, gs, gs, glyph_index(k->glyph), tr, tg, tb, 1);
+                continue;
+            }
+            char buf[8];
+            const char *t = k->label;
+            if (!t) { buf[0] = k->code; buf[1] = 0; if (kb_shift && buf[0] >= 'a' && buf[0] <= 'z') buf[0] -= 32; t = buf; }
+            if (k->kind == KK_SHIFT && kb_shift == 2) t = "SHIFT";
+            if (k->kind == KK_CHAR && k->code == ' ') t = "";
+            draw_text(x + (w - text_width(t, p)) / 2, y + (h - 8 * p) / 2, p, t, tr, tg, tb);
+        }
 }
 static void draw_overlay(void) {
     track_screen();
@@ -513,6 +669,7 @@ static void draw_overlay(void) {
         draw_button(settings_button.x, settings_button.y, settings_button.w, settings_button.h, glyph_index(G_GEAR), 0);
         if (screen_from_game)
             draw_button(close_button.x, close_button.y, close_button.w, close_button.h, glyph_index(G_CLOSE), close_button.pressed);
+        if (keyboard_shown) draw_keyboard();
         glFlush();
         eglMakeCurrent(dpy, surf, surf, ctx);
         return;

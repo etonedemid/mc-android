@@ -9,8 +9,6 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
-import android.view.ViewGroup;
-import android.view.inputmethod.InputMethodManager;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -39,33 +37,39 @@ public class McActivity extends NativeActivity {
     private SharedPreferences prefs;
     private boolean decided;
 
-    // --- on-screen keyboard (the keyboard and chat buttons, from touch.h via glue.c) ---
-    private KeyboardView keyboard;
-    public void showKeyboard(boolean on) {
+    // --- the on-screen keyboard's Paste key (touch.h): the clipboard's text, typed into the game ---
+    static native void nativeChar(int codePoint);
+    public void paste() {
         runOnUiThread(() -> {
-            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
-            if (on) { keyboard.requestFocus(); imm.showSoftInput(keyboard, InputMethodManager.SHOW_FORCED); }
-            else imm.hideSoftInputFromWindow(keyboard.getWindowToken(), 0);
+            android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            android.content.ClipData clip = cm.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return;
+            CharSequence t = clip.getItemAt(0).coerceToText(this);
+            t.toString().replace('\n', ' ').codePoints().forEach(McActivity::nativeChar);
         });
     }
 
     // --- render resolution (the settings button, from touch.h via glue.c): lines rendered, scaled up to the screen ---
     static native void nativeSetResolution(int height);
+    // render resolution as a percentage of the screen's (gear button); applied live by glue.c
+    static final int[] SCALES = { 25, 33, 50, 67, 75, 100 };
+    int renderScale() { return getSharedPreferences("video", Context.MODE_PRIVATE).getInt("scale", 67); }
+    void applyResolution() {
+        int screen = Math.min(getResources().getDisplayMetrics().widthPixels, getResources().getDisplayMetrics().heightPixels);
+        nativeSetResolution(screen * renderScale() / 100);
+    }
     public void openSettings() {
         runOnUiThread(() -> {
-            int screen = Math.min(getResources().getDisplayMetrics().widthPixels, getResources().getDisplayMetrics().heightPixels);
-            int[] heights = { 480, 540, 720, 900, screen };
-            String[] labels = new String[heights.length];
-            int cur = getSharedPreferences("video", Context.MODE_PRIVATE).getInt("height", 720), sel = 2;
-            for (int i = 0; i < heights.length; i++) {
-                labels[i] = (i == heights.length - 1 ? "Native (" + screen + "p)" : heights[i] + "p")
-                    + (heights[i] == 720 ? " - default" : "");
-                if (heights[i] == cur) sel = i;
+            String[] labels = new String[SCALES.length];
+            int cur = renderScale(), sel = 0;
+            for (int i = 0; i < SCALES.length; i++) {
+                labels[i] = SCALES[i] + "%" + (SCALES[i] == 67 ? " - default" : "");
+                if (SCALES[i] <= cur) sel = i;
             }
             new AlertDialog.Builder(this).setTitle("Render resolution")
                 .setSingleChoiceItems(labels, sel, (d, w) -> {
-                    getSharedPreferences("video", Context.MODE_PRIVATE).edit().putInt("height", heights[w]).apply();
-                    nativeSetResolution(heights[w]);
+                    getSharedPreferences("video", Context.MODE_PRIVATE).edit().putInt("scale", SCALES[w]).apply();
+                    applyResolution();
                     d.dismiss();
                 })
                 .setNegativeButton("Cancel", null).show();
@@ -74,9 +78,7 @@ public class McActivity extends NativeActivity {
 
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
-        keyboard = new KeyboardView(this);
-        addContentView(keyboard, new ViewGroup.LayoutParams(1, 1));
-        nativeSetResolution(getSharedPreferences("video", Context.MODE_PRIVATE).getInt("height", 720));
+        applyResolution();
         if (saved != null) return;   // recreated: the game is already running with its account
         prefs = getSharedPreferences("account", Context.MODE_PRIVATE);
         String refresh = prefs.getString("refresh_token", null);

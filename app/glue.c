@@ -50,14 +50,11 @@ static void call_activity(const char *name, const char *sig, int arg) {
     (*env)->DeleteLocalRef(env, c);
     if (attached) (*activity->vm)->DetachCurrentThread(activity->vm);
 }
-// The on-screen keyboard: McActivity's invisible text editor (KeyboardView.java), as ANativeActivity_showSoftInput
-// does nothing on current Android. Typed characters come back through nativeChar/nativeKey below.
+// The on-screen keyboard is touch.h's own (Android's doesn't come up for a NativeActivity); its Paste key asks the
+// activity for the clipboard, whose text comes back through nativeChar below.
 static int keyboard_shown;
-static void keyboard(int show) {
-    if (show == keyboard_shown) return;
-    keyboard_shown = show;
-    call_activity("showKeyboard", "(Z)V", show);
-}
+static void keyboard(int show) { keyboard_shown = show; }
+static void paste(void) { call_activity("paste", "()V", 0); }
 static void open_settings(void) { call_activity("openSettings", "()V", 0); }
 static volatile int requested_H;   // render height asked for in the settings (McActivity.openSettings)
 static volatile int app_focused = 1;    // the activity has the window focus; lost in the background, so the game pauses
@@ -103,16 +100,13 @@ JNIEXPORT void JNICALL Java_com_etonedemid_mc_McActivity_nativeLogin(JNIEnv *env
     LOG("account: %s", login_name[0] ? login_name : "offline");
 }
 
-// --- from the activity: typed text, render resolution ---
+// --- from the activity: pasted text, render resolution ---
 enum { EV_KEY_, EV_CHAR_ };   // (the event queue below; same numbers as EV_KEY/EV_CHAR)
 static void push_ev(int type, int a, int b);
-JNIEXPORT void JNICALL Java_com_etonedemid_mc_KeyboardView_nativeChar(JNIEnv *env, jclass c, jint cp) { (void)env; (void)c; push_ev(EV_CHAR_, cp, 0); }
-JNIEXPORT void JNICALL Java_com_etonedemid_mc_KeyboardView_nativeKey(JNIEnv *env, jclass c, jint k) {
-    (void)env; (void)c; push_ev(EV_KEY_, k, 1); push_ev(EV_KEY_, k, 0);
-}
+JNIEXPORT void JNICALL Java_com_etonedemid_mc_McActivity_nativeChar(JNIEnv *env, jclass c, jint cp) { (void)env; (void)c; push_ev(EV_CHAR_, cp, 0); }
 JNIEXPORT void JNICALL Java_com_etonedemid_mc_McActivity_nativeSetResolution(JNIEnv *env, jclass c, jint h) {
     (void)env; (void)c;
-    if (h >= 360 && h <= 4320) requested_H = h;
+    if (h >= 200 && h <= 4320) requested_H = h;
 }
 
 // --- the game thread ---
