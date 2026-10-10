@@ -3,7 +3,7 @@
 //
 //   left:   D-pad (W A S D; double-tap forward to sprint), sneak toggle in its middle
 //   right:  jump, use (right button held: place, eat, draw a bow) beside it, drop above; inventory beside the hotbar;
-//           pause and camera view at the top right; chat (opens with the keyboard up) at the top left
+//           pause, camera view (F5) and debug screen (F3) at the top right; chat (opens with the keyboard up) at the top left
 //   layout: a move button over screens opened from the game enters edit mode: every control shows, drag them where you
 //           like (the D-pad moves as one, sneak at its middle), Done saves, Reset puts them back. Kept in controls.txt
 //           in the data dir as offsets in screen heights.
@@ -106,7 +106,7 @@ static int gles_load(void) {
 // --- layout (surface pixels) ---
 enum { ACT_KEY, ACT_TOGGLE, ACT_MOUSE };   // ACT_MOUSE: key is the mouse button
 typedef struct { const char *glyph; int action, key; float x, y, w, h; int pressed; } Button;
-enum { B_SNEAK, B_JUMP, B_USE, B_DROP, B_INV, B_PAUSE, B_CAM, B_CHAT, NBUTTONS };
+enum { B_SNEAK, B_JUMP, B_USE, B_DROP, B_INV, B_PAUSE, B_CAM, B_CHAT, B_DEBUG, NBUTTONS };
 static Button close_button, keyboard_button, move_button, done_button, reset_button;
 static float offs[NBUTTONS][2];   // user's layout: offset of each control in screen heights; offs[B_SNEAK] moves the D-pad
 static int edit_mode;
@@ -154,14 +154,32 @@ static const char *G_CAM = "........" "..####.." ".#....#." "#..##..#" "#..##..#
 static const char *G_USE = "########" "#......#" "#..##..#" "#.####.#" "#.####.#" "#..##..#" "#......#" "########";
 static const char *G_KEYB = "........" "########" "#.#.#.##" "########" "##.#.#.#" "########" "#.####.#" "########";
 static const char *G_CHAT = "########" "#......#" "#.####.#" "#......#" "#.###..#" "#......#" "########" ".##.....";
+// "F3" in pixel letters (16x16): the debug screen
+static const char *G_F3 =
+    "................"
+    "................"
+    "................"
+    "................"
+    "................"
+    "................"
+    ".#####...#####.."
+    ".#.......#...#.."
+    ".#...........#.."
+    ".####......##..."
+    ".#...........#.."
+    ".#.......#...#.."
+    ".#.......#####.."
+    "................"
+    "................"
+    "................";
 static const char *G_MOVE = "...##..." "..####.." ".#.##.#." "########" "########" ".#.##.#." "..####.." "...##...";
 static const char *G_CHECK = "........" ".......#" "......##" "#....##." "##..##.." ".####..." "..##...." "........";
 static const char *G_RESET = "..####.." ".#....##" "#....###" "#......." "#......#" "#......#" ".#....#." "..####..";
 static const char *G_CLOSE = "##....##" "###..###" ".######." "..####.." "..####.." ".######." "###..###" "##....##";
-#define NGLYPHS 18   // atlas cells (16x16): 0 is solid, then these in order
+#define NGLYPHS 19   // atlas cells (16x16): 0 is solid, then these in order
 static const char **all_glyphs(void) {
     static const char *all[NGLYPHS];
-    const char *g[NGLYPHS] = { NULL, G_UP, G_DOWN, G_LEFT, G_RIGHT, G_JUMP, G_SNEAK, G_DROP, G_INV, G_PAUSE, G_CAM, G_CLOSE, G_USE, G_KEYB, G_CHAT, G_MOVE, G_CHECK, G_RESET };
+    const char *g[NGLYPHS] = { NULL, G_UP, G_DOWN, G_LEFT, G_RIGHT, G_JUMP, G_SNEAK, G_DROP, G_INV, G_PAUSE, G_CAM, G_CLOSE, G_USE, G_KEYB, G_CHAT, G_MOVE, G_CHECK, G_RESET, G_F3 };
     memcpy(all, g, sizeof g);
     return all;
 }
@@ -184,6 +202,7 @@ static void layout(void) {
     float tb = 0.7f * b;
     buttons[B_PAUSE] = (Button){ G_PAUSE, ACT_KEY, K_ESC, W - m / 2 - tb, m / 2, tb, tb };
     buttons[B_CAM] = (Button){ G_CAM, ACT_KEY, K_F5, W - m / 2 - 2 * tb - 12 * u, m / 2, tb, tb };
+    buttons[B_DEBUG] = (Button){ G_F3, ACT_KEY, K_F3, W - m / 2 - 3 * tb - 24 * u, m / 2, tb, tb };
     close_button = (Button){ G_CLOSE, ACT_KEY, K_ESC, W - m / 2 - tb, m / 2, tb, tb, close_button.pressed };
     keyboard_button = (Button){ G_KEYB, ACT_KEY, 0, m / 2, m / 2, tb, tb, keyboard_button.pressed };
     buttons[B_CHAT] = (Button){ G_CHAT, ACT_KEY, 'T', m / 2, m / 2, tb, tb };
