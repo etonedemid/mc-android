@@ -2,7 +2,7 @@
 
 Minecraft Java 1.12.2 with OptiFine, compiled ahead of time to a native Android app with GraalVM native-image. No JVM on the phone. The game runs on OpenGL ES through gl4es, with a GLFW-style window layer over EGL.
 
-Private, for personal use. You need your own copy of the game: no Minecraft code or assets are in this repo or in the APK it builds, except the font tables in app/mcfont.h (generated from the game's own font).
+Private, for personal use. This repo has no Minecraft code or assets, apart from the font tables in app/mcfont.h (generated from the game's own font). The APK it builds does contain the compiled game and the resources from its jar, so share an APK only with people who own Minecraft. Sounds, music and the other languages come from Mojang's asset server and are copied to the phone separately.
 
 Features:
 
