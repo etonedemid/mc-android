@@ -14,7 +14,7 @@ Features:
 - pauses when the app goes to the background
 - immersive full screen, either landscape orientation
 
-Requirements: an arm64 phone, GraalVM 25 CE, Android NDK 26, adb. The jar and configs come from the Switch port in ~/mc-switch.
+Requirements: an arm64 phone, GraalVM 25 CE, Android NDK 26, adb.
 
 Build, in order:
 
